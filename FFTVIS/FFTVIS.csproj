@@ -1,0 +1,38 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="FftSharp" Version="2.2.0" />
+    <PackageReference Include="ZstdNet" Version="1.4.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="NAudio">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.Asio">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.Asio.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.Core">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.Core.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.Midi">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.Midi.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.Wasapi">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.Wasapi.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.WinForms">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.WinForms.dll</HintPath>
+    </Reference>
+    <Reference Include="NAudio.WinMM">
+      <HintPath>..\..\..\..\Desktop\NAudio-master\NAudio\bin\Debug\net6.0-windows\NAudio.WinMM.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
