@@ -140,7 +140,7 @@ namespace FreqFreak
             return BuildFrame(magnitudes, sampleRate);
         }
 
-        // Frame builder. This makes our visualizer frames!
+        // Frame Builder entry, routes to one of the builders below
         private double[] BuildFrame(double[] mags, int sampleRate)
         {
             switch (SpectrogramMapping)
@@ -157,6 +157,7 @@ namespace FreqFreak
             }
         }
 
+        // Frame builder helpers
         private double[] SmoothFrame(double[] frame)
         {
             var smoothed = new double[BarCount];
@@ -436,7 +437,7 @@ namespace FreqFreak
             return smoothed;
         }
 
-        // Frame Builder Part 3, Log10  
+        // Frame Builder Part 3, Log10 
         private double[] BuildFrameLog(double[] mags, int sampleRate)
         {
             // Preparing Variables
