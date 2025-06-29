@@ -5,8 +5,14 @@ This repo contains a C# library that can encode and decode FVZ files. It also co
 
 This repo also contains a JavaScript implementation of the decoder that I used to display examples on the [Blog Post](https://epsirho.com/posts/fft-blog) about this project.
 
+(Note v1.0.1 Fixes a missing depencency for NAudio)
+
 # Quick Start
-FFTVIS's C# libary can be installed from Nuget. It relies on NAudio, FFTSharp, and ZstdNet.
+FFTVIS's C# libary can be installed from [Nuget](https://www.nuget.org/packages/FFTVIS/1.0.0). It relies on NAudio, FFTSharp, and ZstdNet.
+```bash
+dotnet add package FFTVIS --version 1.0.1
+```
+
 Encoding is very simple:
 ```C#
 AudioEncoder encoder = new AudioEncoder(barCount, 0, 1, -60, 50, 20, 20000, 0, SpectrogramMapping.Normalized, res, fps, ct); // Create a new encoder
