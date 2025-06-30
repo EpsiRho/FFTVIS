@@ -8,7 +8,7 @@ This repo also contains a JavaScript implementation of the decoder that I used t
 (Note v1.0.1 Fixes a missing depencency for NAudio)
 
 # Quick Start
-FFTVIS's C# libary can be installed from [Nuget](https://www.nuget.org/packages/FFTVIS/1.0.1). It relies on NAudio, FFTSharp, and ZstdNet.
+FFTVIS's C# libary can be installed from [Nuget](https://www.nuget.org/packages/FFTVIS/1.0.1). It relies on [NAudio](https://github.com/naudio/NAudio), [FFTSharp](https://github.com/swharden/FftSharp), and [ZstdNet](https://github.com/skbkontur/ZstdNet).
 ```bash
 dotnet add package FFTVIS --version 1.0.1
 ```
