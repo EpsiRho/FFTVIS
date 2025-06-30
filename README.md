@@ -1,7 +1,7 @@
 # FFTVIS (.fvz) File Format
 The FFTVIS file format is a compacted representation of a pre generated frequency spectrum for visualizing audio files. It's a simple format at it's base: a header describing the generation and how to play it back properly, and an array of arrays of doubles from 0->1 representing the amplitude of a frequency bin. It supports 3 extra encoding steps for compression: ZSTD 3, Delta Encoding, and Quantization (to 16 or 8 bit). NOTE: Delta Encoding makes a difference unless also encoding with ZSTD.
 
-This repo contains a C# library that can encode and decode FVZ files. It also contains a simple demo app that makes use of the library to allow anyone to encode or decode files for testing. Additionally, if you are building something with the format, you may want to check out [FreqFreak](https://gtihub.com), a Windows application that shows live audio visualizations. I have built an FVZ encoder + decoder + player UI into it for my own testing.
+This repo contains a C# library that can encode and decode FVZ files. It also contains a simple demo app that makes use of the library to allow anyone to encode or decode files for testing. Additionally, if you are building something with the format, you may want to check out [FreqFreak](https://github.com/EpsiRho/FreqFreak), a Windows application that shows live audio visualizations. I have built an FVZ encoder + decoder + player UI into it for my own testing.
 
 This repo also contains a JavaScript implementation of the decoder that I used to display examples on the [Blog Post](https://epsirho.com/posts/fft-blog) about this project.
 
