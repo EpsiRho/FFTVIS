@@ -206,6 +206,59 @@ namespace FFTVIS
                 return false;
             }
         }
+        public bool LoadAudio(string path, int targetSampleRate)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            if (targetSampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(targetSampleRate));
+            path = path.Trim('"');
+
+            try
+            {
+                using var reader = new AudioFileReader(path);
+
+                ISampleProvider provider = reader.WaveFormat.Channels == 2
+                    ? new StereoToMonoSampleProvider(reader) { LeftVolume = 0.5f, RightVolume = 0.5f }
+                    : reader;
+                
+                // Resample to target rate
+                if (provider.WaveFormat.SampleRate != targetSampleRate)
+                    provider = new WdlResamplingSampleProvider(provider, targetSampleRate);
+
+                // Output format: 32-bit float, mono, at targetSampleRate
+                _format = WaveFormat.CreateIeeeFloatWaveFormat(targetSampleRate, 1);
+
+                // Heuristic initial size (based on original duration, but target rate)
+                long est = (long)(reader.TotalTime.TotalSeconds * _format.SampleRate) + 1024;
+                if (est <= 0) est = 1024;
+                _audio = new float[est];
+
+                int offset = 0;
+                float[] buf = _floatPool.Rent(16384);
+                try
+                {
+                    int read;
+                    while ((read = provider.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        if (offset + read > _audio.Length)
+                        {
+                            int newSize = Math.Max(_audio.Length * 2, offset + read);
+                            Array.Resize(ref _audio, newSize);
+                        }
+                        Array.Copy(buf, 0, _audio, offset, read);
+                        offset += read;
+                    }
+                }
+                finally { _floatPool.Return(buf); }
+
+                Array.Resize(ref _audio, offset); // trim to actual size
+                return offset > 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"LoadAudio failed: {ex.Message}");
+                return false;
+            }
+        }
 
         /// <summary>
         /// Generate frames from the loaded audio data.

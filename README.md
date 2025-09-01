@@ -5,17 +5,15 @@ This repo contains a C# library that can encode and decode FVZ files. It also co
 
 This repo also contains a JavaScript implementation of the decoder that I used to display examples on the [Blog Post](https://epsirho.com/posts/fft-blog) about this project.
 
-(Note v1.0.1 Fixes a missing depencency for NAudio)
-
 # Quick Start
-FFTVIS's C# libary can be installed from [Nuget](https://www.nuget.org/packages/FFTVIS/1.0.1). It relies on NAudio, FFTSharp, and ZstdNet.
+FFTVIS's C# library can be installed from [Nuget](https://www.nuget.org/packages/FFTVIS/1.0.1). It relies on NAudio, FFTSharp, and ZstdNet.
 ```bash
-dotnet add package FFTVIS --version 1.0.1
+dotnet add package FFTVIS --version 1.0.2
 ```
 
 Encoding is very simple:
 ```C#
-AudioEncoder encoder = new AudioEncoder(barCount, 0, 1, -60, 50, 20, 20000, 0, SpectrogramMapping.Normalized, res, fps, ct); // Create a new encoder
+AudioEncoder encoder = new AudioEncoder(128, -80, 80, 20, 20000, 0, SpectrogramMapping.Normalized, 4096, 100, CompressionType.Zstd); // Create a new encoder
 
 var chk = encoder.LoadAudio(input); // Load audio from a file path
 chk = encoder.GenerateFrames(); // Generate frames from audio
@@ -23,7 +21,7 @@ chk = encoder.GenerateFrames(); // Generate frames from audio
 encoder.SaveToFile($"{filename}"); // Auto adds .fvz extention if you don't
 var ms = encoder.SaveFileToMemory(); // You can also save the file's bytes out to a MemoryStream
 
-FrequencyVisualizer fv = GetGeneratedFrames(); // Or return the FV object with header info and frames array
+FrequencyVisualizer fv = encoder.GetGeneratedFrames(); // Or return the FV object with header info and frames array
 ```
 
 Decoding is even simpler:
@@ -98,6 +96,13 @@ When generating .fvz files with the FFTVIS Library, you get lots of control over
 	- 0001 - ZSTD, 0010 - Quant, 0100 - Deltas
 - Quantization Level 
 	- 16 bit or 8 bit, only used if the bitmask is set for Quantization
+
+
+# Changelog
+- v1.0.2
+	- Added an overload for LoadAudio allowing resampling to a target sample rate
+- v1.0.1
+	- Fixed dependency issue
 
 # Extra Notes
 Version 2 was the release version. Version 1 used grouped compression stages, so you could only select None, Zstd, Zstd+Quant, Zstd+Quant+Deltas. Version 2 moved to a bitmask to enable toggling,

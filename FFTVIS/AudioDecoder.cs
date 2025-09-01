@@ -10,7 +10,7 @@ namespace FFTVIS
 {
     /// <summary>
     /// Handles decoding of FFTVIS files (.fvz).
-    /// Static class, just call <see cref="ReadFile(string)"/> or <see cref="DecodeMemoryStream(MemoryStream)"/> to recieve a decoded FrequencyVisulizer object.
+    /// Static class, just call <see cref="ReadFile(string)"/> or <see cref="DecodeMemoryStream(MemoryStream)"/> to recieve a decoded FrequencyVisualizer object.
     /// </summary>
     public static class AudioDecoder
     {

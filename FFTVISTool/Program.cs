@@ -66,12 +66,12 @@ if (int.TryParse(choice, out int ch))
     {
         var watch = Stopwatch.StartNew();
         Console.WriteLine("Loading...");
-        int fps = 120;
-        int barCount = 250;
-        int res = 8192;
+        int fps = 100;
+        int barCount = 128;
+        int res = 4096;
         CompressionType ct = CompressionType.Zstd;
         AudioEncoder encoder = new AudioEncoder(barCount, -80, 90, 20, 20000, 0, SpectrogramMapping.Normalized, res, fps, ct);
-        var chk = encoder.LoadAudio(input);
+        var chk = encoder.LoadAudio(input, 44100);
         if (!chk)
         {
             Console.WriteLine("Failed to load audio.");
