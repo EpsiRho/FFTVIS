@@ -1,284 +1,206 @@
-﻿using ZstdNet;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Runtime.InteropServices;
+﻿using System.Buffers.Binary;
 using System.Text;
-using System.ComponentModel.Design;
+using ZstdNet;
 
 namespace FFTVIS
 {
     /// <summary>
-    /// Handles decoding of FFTVIS files (.fvz).
-    /// Static class, just call <see cref="ReadFile(string)"/> or <see cref="DecodeMemoryStream(MemoryStream)"/> to recieve a decoded FrequencyVisualizer object.
+    /// Decodes .fvz files, version 3 and the older version 2.
+    /// Call <see cref="ReadFile(string)"/>, <see cref="Decode(Stream)"/> or <see cref="DecodeMemoryStream(MemoryStream)"/>.
     /// </summary>
     public static class AudioDecoder
     {
-        // Converts a set of bytes to a struct of type T
-        private static T BytesToStruct<T>(byte[] arr) where T : struct
+        /// <summary>Returns the format version from the first 12 bytes, or -1 if they aren't an .fvz header.</summary>
+        public static int ValidateFormat(ReadOnlySpan<byte> start)
         {
-            T str;
-            int size = Marshal.SizeOf<T>();
-            IntPtr ptr = Marshal.AllocHGlobal(size);
-            try
-            {
-                Marshal.Copy(arr, 0, ptr, size);
-                str = Marshal.PtrToStructure<T>(ptr);
-            }
-            finally
-            {
-                Marshal.FreeHGlobal(ptr);
-            }
-            return str;
+            if (start.Length < 12) return -1;
+            if (Encoding.ASCII.GetString(start[..6]) != "FFTVIS") return -1;
+            return BinaryPrimitives.ReadInt32LittleEndian(start[8..]);
         }
 
-        private static int ValidateFormat(byte[] arr)
-        {
-            // Header struct may change but the first bytes wont
-            // We start with the magic string with 8 bytes and then an int version number
-
-            // File is too small
-            if (arr.Length < 12) // 8 bytes magic + 4 bytes version
-                return -1;
-
-            // Magic is incorrect
-            string magic = Encoding.UTF8.GetString(arr, 0, 6);
-            if (magic != "FFTVIS")
-                return -1;
-
-            // Version is incorrect
-            // Version 1 supported compression types differently
-            int version = BitConverter.ToInt32(arr, 8);
-
-            return version;
-        }
-
-        /// <summary>
-        /// Reads in a .fvz file from disk.
-        /// </summary>
-        /// <param name="filePath">The path of the file to decode.</param>
-        /// <returns>A FrequencyVisualizer object containing the metadata and frames.</returns>
+        /// <summary>Reads in a .fvz file from disk.</summary>
         /// <exception cref="NotSupportedException">The file or format version isn't supported</exception>
         public static FrequencyVisualizer ReadFile(string filePath)
         {
-            FrequencyVisualizer fv = null;
-            using (FileStream fs = new FileStream(filePath, FileMode.Open))
-            {
-                // File Validity Check
-                int headerSize = Marshal.SizeOf<Metadata>();
-                byte[] headerBytes = new byte[headerSize];
-                fs.Read(headerBytes, 0, headerSize);
-
-                var version = ValidateFormat(headerBytes);
-                if(version != 2)
-                {
-                    throw new NotSupportedException($"Unsupported file version: {version}. Only version 2 is supported.");
-                }
-
-                var header = BytesToStruct<Metadata>(headerBytes);
-
-                uint totalFrames = header.totalFrames;
-                ushort numBands = header.numBands;
-                ushort compressionType = header.compressionType;
-
-                double[][] frames;
-
-                // Decode bitmask
-                bool[] bitmask = new bool[4];
-                bitmask[0] = (compressionType & 0x01) != 0; // Zstd
-                bitmask[1] = (compressionType & 0x02) != 0; // Quantized
-                bitmask[2] = (compressionType & 0x04) != 0; // Delta Encoded
-                bitmask[3] = header.quantizeLevel; // Quant 16 or 8 (false or true)
-
-                // Decode file
-                frames = DecodeCombinations(fs, totalFrames, numBands, bitmask);
-
-                fv = new(header, frames);
-            }
-            return fv;
+            using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return Decode(fs);
         }
 
-        /// <summary>
-        /// Reads in a .fvz file from a MemoryStream.
-        /// </summary>
-        /// <param name="ms">The MemoryStream of the file to decode.</param>
-        /// <returns>A FrequencyVisualizer object containing the metadata and frames.</returns>
-        /// <exception cref="NotSupportedException">The file or format version isn't supported</exception>
-        public static FrequencyVisualizer DecodeMemoryStream(MemoryStream ms)
+        /// <summary>Reads in a .fvz file from a MemoryStream.</summary>
+        public static FrequencyVisualizer DecodeMemoryStream(MemoryStream ms) => Decode(ms);
+
+        /// <summary>Reads only the header of a v3 file (no payload decoding).</summary>
+        public static Metadata ReadHeader(Stream stream)
         {
-            FrequencyVisualizer fv = null;
-            // File Validity Check
-            int headerSize = Marshal.SizeOf<Metadata>();
-            byte[] headerBytes = new byte[headerSize];
-            ms.Read(headerBytes, 0, headerSize);
-
-            var version = ValidateFormat(headerBytes);
-            if (version != 2)
-            {
-                throw new NotSupportedException($"Unsupported file version: {version}. Only version 2 is supported.");
-            }
-
-            var header = BytesToStruct<Metadata>(headerBytes);
-
-            uint totalFrames = header.totalFrames;
-            ushort numBands = header.numBands;
-            ushort compressionType = header.compressionType;
-
-            double[][] frames;
-
-            // Decode bitmask
-            bool[] bitmask = new bool[4];
-            bitmask[0] = (compressionType & 0x01) != 0; // Zstd
-            bitmask[1] = (compressionType & 0x02) != 0; // Quantized
-            bitmask[2] = (compressionType & 0x04) != 0; // Delta Encoded
-            bitmask[3] = header.quantizeLevel; // Quant 16 or 8 (false or true)
-
-            // Decode file
-            frames = DecodeCombinations(ms, totalFrames, numBands, bitmask);
-
-            fv = new(header, frames);
-            return fv;
+            var fv = Decode(stream, headerOnly: true);
+            return fv.metadata;
         }
 
-        private static double[][] DecodeCombinations(Stream fs, uint totalFrames, ushort numBands, bool[] bitmask)
+        /// <summary>Reads a .fvz file from any stream positioned at its start.</summary>
+        public static FrequencyVisualizer Decode(Stream stream) => Decode(stream, headerOnly: false);
+
+        private static FrequencyVisualizer Decode(Stream stream, bool headerOnly)
+        {
+            var start = new byte[12];
+            stream.ReadExactly(start);
+            int version = ValidateFormat(start);
+            switch (version)
+            {
+                case 3:
+                {
+                    // FvzFormat.Read expects to read the fixed header from offset 0; give it the bytes we consumed.
+                    using var joined = new PrefixedStream(start, stream);
+                    if (headerOnly) return HeaderOnly(joined);
+                    return FvzFormat.Read(joined);
+                }
+                case 2:
+                    return ReadV2(start, stream);
+                default:
+                    throw new NotSupportedException($"Unsupported file version: {version}. Versions 2 and 3 are supported.");
+            }
+        }
+
+        private static FrequencyVisualizer HeaderOnly(Stream s) =>
+            new(FvzFormat.ReadHeader(s), new[] { Array.Empty<float[]>() });
+
+        // ---- Version 2 ----
+        // magic(8) version(4) fftResolution(4) numBands(2) frameRate(2) totalFrames(4) maxAmplitude(4)
+        // compressionType(2) padding(2) quantizeLevel(1) padding(3) = 36 bytes, then the payload.
+        private const int V2HeaderSize = 36;
+
+        private static FrequencyVisualizer ReadV2(byte[] start, Stream stream)
+        {
+            var header = new byte[V2HeaderSize];
+            start.CopyTo(header, 0);
+            stream.ReadExactly(header, 12, V2HeaderSize - 12);
+            var h = header.AsSpan();
+            var md = new Metadata
+            {
+                Version = 2,
+                FftResolution = BinaryPrimitives.ReadUInt32LittleEndian(h[12..]),
+                NumBands = BinaryPrimitives.ReadUInt16LittleEndian(h[16..]),
+                FrameRate = BinaryPrimitives.ReadUInt16LittleEndian(h[18..]),
+                TotalFrames = BinaryPrimitives.ReadUInt32LittleEndian(h[20..]),
+                MaxAmplitude = BinaryPrimitives.ReadSingleLittleEndian(h[24..]),
+                LegacyCompressionType = BinaryPrimitives.ReadUInt16LittleEndian(h[28..]),
+                LegacyQuantize8 = h[32] != 0,
+                Channels = 1,
+            };
+            var ct = (CompressionType)md.LegacyCompressionType;
+            md.Codec = ct.HasFlag(CompressionType.Zstd) ? FvzCodec.Zstd : FvzCodec.None;
+            md.DeltaEncoded = ct.HasFlag(CompressionType.DeltaEncode);
+            md.QuantizeBits = (byte)(ct.HasFlag(CompressionType.Quantize) ? (md.LegacyQuantize8 ? 8 : 16) : 16);
+
+            var frames = DecodeV2(stream, md.TotalFrames, md.NumBands,
+                ct.HasFlag(CompressionType.Zstd), ct.HasFlag(CompressionType.Quantize),
+                ct.HasFlag(CompressionType.DeltaEncode), md.LegacyQuantize8);
+            return new FrequencyVisualizer(md, new[] { frames });
+        }
+
+        private static float[][] DecodeV2(Stream fs, uint totalFrames, ushort numBands, bool zstd, bool quant, bool delta, bool q8)
         {
             using var br = new BinaryReader(fs, Encoding.UTF8, leaveOpen: true);
-            byte[] raw; // Raw bytes
             int sampleCount = (int)(totalFrames * numBands);
-            double[][] output = new double[totalFrames][];
+            var output = new float[totalFrames][];
+            byte[] raw;
 
-            // Zstd
-            if (bitmask[0])
+            if (zstd)
             {
                 int compressedLength = br.ReadInt32();
-                byte[] compressed = br.ReadBytes(compressedLength);
-
-                using (var decompressor = new Decompressor())
-                {
-                    raw = decompressor.Unwrap(compressed);
-                }
+                using var decompressor = new Decompressor();
+                raw = decompressor.Unwrap(br.ReadBytes(compressedLength));
             }
-            else // Uncompressed just read it in
+            else
             {
-                int bytesToRead;
-                if (bitmask[2] && bitmask[1] && !bitmask[3]) // Delta + Quantized 16 bit
-                    bytesToRead = sampleCount * 2;
-                else if (bitmask[1]) // Just quantized (8 bit or 16 bit)
-                    bytesToRead = bitmask[3] ? sampleCount : sampleCount * 2;
-                else // Uncompressed doubles
-                    bytesToRead = sampleCount * sizeof(double); // 8 bytes per double
-
-                raw = br.ReadBytes(bytesToRead);
+                int bytes = quant ? (q8 ? sampleCount : sampleCount * 2) : sampleCount * sizeof(double);
+                raw = br.ReadBytes(bytes);
             }
 
-            // Reconstruct from Deltas
-            if (bitmask[2])
+            for (int f = 0; f < totalFrames; f++) output[f] = new float[numBands];
+
+            if (delta && quant && !q8)
             {
-                if (bitmask[1] && !bitmask[3]) // 16 bit 
+                var current = new short[numBands];
+                for (int i = 0; i < sampleCount; i++)
                 {
-                    // 16-bit delta encoding: deltas are shorts, accumulate into short current values
-                    short[] current = new short[numBands];
-                    short[] allDeltas = new short[sampleCount];
-                    Buffer.BlockCopy(raw, 0, allDeltas, 0, raw.Length);
-
-                    for (int f = 0; f < totalFrames; f++)
-                    {
-                        output[f] = new double[numBands];
-                        for (int j = 0; j < numBands; j++)
-                        {
-                            int idx = f * numBands + j;
-                            current[j] += allDeltas[idx];
-                            output[f][j] = (current[j] / 32767.0 + 1.0) / 2.0;
-                        }
-                    }
-                    return output;
+                    int j = i % numBands;
+                    current[j] += BinaryPrimitives.ReadInt16LittleEndian(raw.AsSpan(i * 2));
+                    output[i / numBands][j] = (float)((current[j] / 32767.0 + 1.0) / 2.0);
                 }
-                else if (bitmask[1] && bitmask[3]) // 8 bit
-                {
-                    sbyte[] current = new sbyte[numBands];
-                    for (int f = 0; f < totalFrames; f++)
-                    {
-                        output[f] = new double[numBands];
-                        for (int j = 0; j < numBands; j++)
-                        {
-                            sbyte delta = unchecked((sbyte)raw[f * numBands + j]);
-                            current[j] += delta;
-                            output[f][j] = (current[j] / 127.0 + 1.0) / 2.0;
-                        }
-                    }
-                    return output;
-                }
-                else // no quant, just double
-                {
-                    double[] current = new double[numBands];
-                    for (int f = 0; f < totalFrames; f++)
-                    {
-                        output[f] = new double[numBands];
-                        for (int j = 0; j < numBands; j++)
-                        {
-                            int idx = (f * numBands + j) * sizeof(double); // 8 bytes per double
-                            double delta = BitConverter.ToDouble(raw, idx);
-                            current[j] += delta;
-                            output[f][j] = current[j];
-                        }
-                    }
-                    return output;
-                }
-
-                // If we are delta encoded, we don't need to dequantize again
-                // Delta encoding uses a different quantization type (signed instead of unsigned) because we need negatives to show the difference from large to small
             }
-
-            // Dequantize 
-            if (bitmask[1] && !bitmask[3]) // 16 bit 
+            else if (delta && quant && q8)
             {
-                ushort[] allShorts = new ushort[sampleCount];
-                Buffer.BlockCopy(raw, 0, allShorts, 0, raw.Length);
-
-                for (int f = 0; f < totalFrames; f++)
+                var current = new sbyte[numBands];
+                for (int i = 0; i < sampleCount; i++)
                 {
-                    output[f] = new double[numBands];
-                    for (int j = 0; j < numBands; j++)
-                    {
-                        // Convert to 0-1 range
-                        output[f][j] = allShorts[f * numBands + j] / 65535.0;
-                    }
+                    int j = i % numBands;
+                    current[j] += unchecked((sbyte)raw[i]);
+                    output[i / numBands][j] = (float)((current[j] / 127.0 + 1.0) / 2.0);
                 }
             }
-            else if (bitmask[1] && bitmask[3]) // 8 bit
+            else if (delta)
             {
-                for (int f = 0; f < totalFrames; f++)
+                var current = new double[numBands];
+                for (int i = 0; i < sampleCount; i++)
                 {
-                    output[f] = new double[numBands];
-                    for (int j = 0; j < numBands; j++)
-                    {
-                        // Convert to 0-1 range
-                        output[f][j] = raw[f * numBands + j] / 255.0;
-                    }
+                    int j = i % numBands;
+                    current[j] += BitConverter.ToDouble(raw, i * 8);
+                    output[i / numBands][j] = (float)current[j];
                 }
             }
-
-            if(output[0] == null)
+            else if (quant && !q8)
             {
-                // No quantization or delta encoding so take from raw and convert to double[][]
-                int floatSize = sizeof(double); 
-
-                for (int f = 0; f < totalFrames; f++)
-                {
-                    output[f] = new double[numBands];
-                    for (int j = 0; j < numBands; j++)
-                    {
-                        int idx = (f * numBands + j) * floatSize;
-                        double val = BitConverter.ToDouble(raw, idx);
-                        // Clamp or scale if needed, otherwise just assign
-                        output[f][j] = val;
-                    }
-                }
-                return output;
-
+                for (int i = 0; i < sampleCount; i++)
+                    output[i / numBands][i % numBands] = BinaryPrimitives.ReadUInt16LittleEndian(raw.AsSpan(i * 2)) / 65535f;
             }
-
+            else if (quant)
+            {
+                for (int i = 0; i < sampleCount; i++)
+                    output[i / numBands][i % numBands] = raw[i] / 255f;
+            }
+            else
+            {
+                for (int i = 0; i < sampleCount; i++)
+                    output[i / numBands][i % numBands] = (float)BitConverter.ToDouble(raw, i * 8);
+            }
             return output;
+        }
+
+        /// <summary>Replays bytes already read from a stream before continuing with the stream itself.</summary>
+        private sealed class PrefixedStream : Stream
+        {
+            private readonly byte[] _prefix;
+            private readonly Stream _inner;
+            private int _pos;
+
+            public PrefixedStream(byte[] prefix, Stream inner)
+            {
+                _prefix = prefix;
+                _inner = inner;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_pos < _prefix.Length)
+                {
+                    int n = Math.Min(count, _prefix.Length - _pos);
+                    Array.Copy(_prefix, _pos, buffer, offset, n);
+                    _pos += n;
+                    return n;
+                }
+                return _inner.Read(buffer, offset, count);
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            protected override void Dispose(bool disposing) { } // never dispose the caller's stream
         }
     }
 }

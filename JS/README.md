@@ -2,16 +2,17 @@
 
 This is a simple conversion of the decoder from the C# implementation. I use this for the [Blog Post](https://epsirho.com/posts/fft-blog) on my site about this. There is also the crude implementation of the player used in my site. However this player simply times off of a timer, and you would likely want to base off an audio player.
 
-This decoder depends on [fzstd](https://www.npmjs.com/package/fzstd) sourced from `https://unpkg.com/fzstd@0.1.1`
+Version 3 files are brotli compressed by default: pass a brotli function (e.g. Node's `zlib.brotliDecompressSync`, or a library such as `brotli-dec-wasm` in browsers); the decoder falls back to `DecompressionStream("brotli")` where the browser has it. zstd files (all v2 compressed files) need [fzstd](https://www.npmjs.com/package/fzstd).
 
 ## Usage
 Using the Decoder:
 ```js
 const arrayBuffer = await file.arrayBuffer(); // Read in your .fvz file
 const { decompress } = fzstd; // Get a reference to the fzstd decompressor
-const result = await AudioDecoder.readFile(arrayBuffer, decompress); // Pass both to the AudioDecoder
+const result = await AudioDecoder.readFile(arrayBuffer, { zstd: decompress, brotli: myBrotliDecompress });
+const frame = AudioDecoder.frameAt(result, audio.currentTime * 1000); // interpolated frame
 ```
-This will return an object with `.header` to access metadata and `.frames` to access the frames array
+This returns `.header` (metadata, including `bandEdges` and `channels` for v3), `.channels` (frames per channel) and `.frames` (the first channel)
 
 Using the player:
 ```js

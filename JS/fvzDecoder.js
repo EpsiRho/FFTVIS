@@ -1,217 +1,215 @@
+// FFTVIS (.fvz) decoder for versions 2 and 3. See the README for the byte layout.
+//
+// Version 3 files are usually brotli compressed. Pass decompressors for the codecs you expect:
+//   await AudioDecoder.readFile(buffer, { brotli: bytes => myBrotli.decompress(bytes), zstd: fzstd.decompress })
+// Without a brotli function the decoder tries the browser's DecompressionStream("brotli") where it exists.
+// The second argument may also be a bare zstd function, as in v2.
 class AudioDecoder {
-    // Validates the format of the byte array
+    static CODEC_NONE = 0;
+    static CODEC_ZSTD = 1;
+    static CODEC_BROTLI = 2;
+
+    // Returns the format version, or -1 when the bytes aren't an .fvz header
     static validateFormat(dataView) {
-        // Header struct may change but the first bytes wont
-        // We start with the magic string with 8 bytes and then an int version number
-
-        // File is too small
-        if (dataView.byteLength < 12) // 8 bytes magic + 4 bytes version
-            return -1;
-
-        // Magic is incorrect
-        const magicBytes = new Uint8Array(dataView.buffer, 0, 6);
-        const magic = String.fromCharCode(...magicBytes);
-        if (magic !== "FFTVIS")
-            return -1;
-
-        // Version is incorrect
-        // Version 1 supported compression types differently
-        const version = dataView.getInt32(8, true);
-
-        return version;
+        if (dataView.byteLength < 12) return -1;
+        const magic = String.fromCharCode(...new Uint8Array(dataView.buffer, dataView.byteOffset, 6));
+        if (magic !== "FFTVIS") return -1;
+        return dataView.getInt32(8, true);
     }
 
-    static parseHeader(dataView) {
-        const magic = new Uint8Array(dataView.buffer, 0, 8);
-        const magicString = String.fromCharCode(...magic.slice(0, 6)); // First 6 bytes are the magic
-       
-        const version = dataView.getInt32(8, true);
-        const fftResolution = dataView.getUint32(12, true);
-        const numBands = dataView.getUint16(16, true);
-        const frameRate = dataView.getUint16(18, true);
-        const totalFrames = dataView.getUint32(20, true);
-        const maxAmplitude = dataView.getFloat32(24, true);
-        const compressionType = dataView.getUint16(28, true);
-        const quantizeLevel = dataView.getUint8(32) !== 0;
-       
-        const header = {
-            magic: magicString,
-            version,
-            fftResolution,
+    static async readFile(arrayBuffer, decompressors) {
+        const view = new DataView(arrayBuffer);
+        const version = this.validateFormat(view);
+        const codecs = typeof decompressors === "function" ? { zstd: decompressors } : (decompressors || {});
+        if (version === 3) return this.readV3(arrayBuffer, view, codecs);
+        if (version === 2) return this.readV2(arrayBuffer, codecs.zstd);
+        throw new Error(`Unsupported file version: ${version}. Versions 2 and 3 are supported.`);
+    }
+
+    // ---- Version 3 ----
+    static parseHeaderV3(view) {
+        const numBands = view.getUint16(20, true);
+        const headerSize = view.getUint16(12, true);
+        const bandEdges = new Float32Array(numBands + 1);
+        for (let i = 0; i <= numBands && 60 + 4 * i + 4 <= headerSize; i++)
+            bandEdges[i] = view.getFloat32(60 + 4 * i, true);
+        return {
+            magic: "FFTVIS",
+            version: view.getInt32(8, true),
+            headerSize,
+            channels: view.getUint8(14),
+            quantizeBits: view.getUint8(15),
+            fftResolution: view.getUint32(16, true),
             numBands,
-            frameRate,
-            totalFrames,
-            maxAmplitude,
-            compressionType,
-            quantizeLevel
+            frameRate: view.getUint16(22, true),
+            totalFrames: view.getUint32(24, true),
+            sampleRate: view.getUint32(28, true),
+            maxAmplitude: view.getFloat32(32, true),
+            decayPerSecond: view.getFloat32(36, true),
+            dbFloor: view.getFloat32(40, true),
+            dbRange: view.getFloat32(44, true),
+            frequencyMin: view.getFloat32(48, true),
+            frequencyMax: view.getFloat32(52, true),
+            codec: view.getUint8(56),
+            deltaEncoded: (view.getUint8(57) & 1) !== 0,
+            mapping: view.getUint8(58),
+            bandEdges,
         };
-               
-        return header;
     }
 
-    static async readFile(arrayBuffer, zstdDecompressor) {
-        let fv = null;
-        
+    static async readV3(arrayBuffer, view, codecs) {
+        const header = this.parseHeaderV3(view);
+        const payloadLength = view.getUint32(header.headerSize, true);
+        const compressed = new Uint8Array(arrayBuffer, header.headerSize + 4, payloadLength);
+        const raw = await this.decompress(compressed, header.codec, codecs);
 
-        // File Validity Check
-        // magic(8) + version(4) + fftResolution(4) + numBands(2) + frameRate(2) + totalFrames(4) + maxAmplitude(4) + compressionType(2) + padding(2) + quantizeLevel(1) + padding(3) = 36 bytes
-        const headerSize = 36; // Size of Metadata struct in bytes with C# padding
-        const headerBytes = arrayBuffer.slice(0, headerSize);
-        const headerView = new DataView(headerBytes);
+        const { channels, numBands, totalFrames, quantizeBits, deltaEncoded } = header;
+        const wide = quantizeBits > 8;
+        const mask = wide ? 0xFFFF : 0xFF;
+        const scale = 1 / ((1 << quantizeBits) - 1);
+        const rawView = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        const current = new Int32Array(channels * numBands);
+        const out = [];
+        for (let c = 0; c < channels; c++) out.push(new Array(totalFrames));
 
-        const version = this.validateFormat(headerView);
-        if (version !== 2) {
-            throw new Error(`Unsupported file version: ${version}. Only version 2 is supported.`);
+        let p = 0;
+        for (let f = 0; f < totalFrames; f++) {
+            for (let c = 0; c < channels; c++) {
+                const frame = new Float32Array(numBands);
+                for (let b = 0; b < numBands; b++) {
+                    let v;
+                    if (wide) { v = rawView.getUint16(p, true); p += 2; }
+                    else v = raw[p++];
+                    if (deltaEncoded) {
+                        const k = c * numBands + b;
+                        v = (current[k] + v) & mask;
+                        current[k] = v;
+                    }
+                    frame[b] = v * scale;
+                }
+                out[c][f] = frame;
+            }
         }
+        return { header, channels: out, frames: out[0] };
+    }
 
-        const header = this.parseHeader(headerView);
+    static async decompress(bytes, codec, codecs) {
+        if (codec === this.CODEC_NONE) return bytes;
+        if (codec === this.CODEC_ZSTD) {
+            if (!codecs.zstd) throw new Error("This file is zstd compressed; pass a zstd decompressor.");
+            return this.asBytes(await this.callDecompressor(codecs.zstd, bytes));
+        }
+        if (codec === this.CODEC_BROTLI) {
+            if (codecs.brotli) return this.asBytes(await this.callDecompressor(codecs.brotli, bytes));
+            if (typeof DecompressionStream !== "undefined") {
+                try {
+                    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("brotli"));
+                    return new Uint8Array(await new Response(stream).arrayBuffer());
+                } catch (e) { /* not supported by this browser */ }
+            }
+            throw new Error("This file is brotli compressed; pass a brotli decompressor.");
+        }
+        throw new Error(`Unknown codec ${codec}`);
+    }
 
-        const totalFrames = header.totalFrames;
-        const numBands = header.numBands;
-        const compressionType = header.compressionType;
+    static async callDecompressor(d, bytes) {
+        if (typeof d === "function") return d(bytes);
+        if (typeof d.decompress === "function") return d.decompress(bytes);
+        throw new Error("Unknown decompressor API");
+    }
 
-        let frames;
+    static asBytes(x) {
+        return x instanceof Uint8Array ? x : new Uint8Array(x);
+    }
 
-        const bitmask = new Array(4);
-        bitmask[0] = (compressionType & 0x01) !== 0; // Zstd
-        bitmask[1] = (compressionType & 0x02) !== 0; // Quantized
-        bitmask[2] = (compressionType & 0x04) !== 0; // Delta Encoded
-        bitmask[3] = header.quantizeLevel; // Quant 16 or 8 (false or true)
-        
-        const dataBuffer = arrayBuffer.slice(headerSize);
-        frames = await this.decodeCombinations(dataBuffer, totalFrames, numBands, bitmask, zstdDecompressor);
+    // Frame at a playback time, blending the two nearest frames (files stored at low frame rates stay smooth).
+    static frameAt(fv, timeMs, channel = 0) {
+        const frames = (fv.channels || [fv.frames])[channel];
+        const exact = Math.max(0, timeMs * fv.header.frameRate / 1000);
+        const last = frames.length - 1;
+        const a = Math.min(Math.floor(exact), last), b = Math.min(a + 1, last), t = exact - Math.floor(exact);
+        const out = new Float32Array(frames[a].length);
+        for (let i = 0; i < out.length; i++) out[i] = frames[a][i] + (frames[b][i] - frames[a][i]) * t;
+        return out;
+    }
 
-        fv = { header, frames };
-        
-        return fv;
+    // ---- Version 2 ----
+    // magic(8) + version(4) + fftResolution(4) + numBands(2) + frameRate(2) + totalFrames(4) + maxAmplitude(4)
+    // + compressionType(2) + padding(2) + quantizeLevel(1) + padding(3) = 36 bytes
+    static parseHeader(dataView) {
+        return {
+            magic: "FFTVIS",
+            version: dataView.getInt32(8, true),
+            fftResolution: dataView.getUint32(12, true),
+            numBands: dataView.getUint16(16, true),
+            frameRate: dataView.getUint16(18, true),
+            totalFrames: dataView.getUint32(20, true),
+            maxAmplitude: dataView.getFloat32(24, true),
+            compressionType: dataView.getUint16(28, true),
+            quantizeLevel: dataView.getUint8(32) !== 0,
+            channels: 1,
+        };
+    }
+
+    static async readV2(arrayBuffer, zstdDecompressor) {
+        const headerSize = 36;
+        const header = this.parseHeader(new DataView(arrayBuffer, 0, headerSize));
+        const ct = header.compressionType;
+        const bitmask = [(ct & 1) !== 0, (ct & 2) !== 0, (ct & 4) !== 0, header.quantizeLevel];
+        const frames = await this.decodeCombinations(arrayBuffer.slice(headerSize), header.totalFrames, header.numBands, bitmask, zstdDecompressor);
+        return { header, channels: [frames], frames };
     }
 
     static async decodeCombinations(dataBuffer, totalFrames, numBands, bitmask, zstdDecompressor) {
         const dataView = new DataView(dataBuffer);
-        let offset = 0;
-        let raw; // Raw bytes
+        let raw;
         const sampleCount = totalFrames * numBands;
         const output = new Array(totalFrames);
 
-        // Zstd
         if (bitmask[0]) {
-            const compressedLength = dataView.getInt32(offset, true);
-            offset += 4;
-            const compressed = new Uint8Array(dataBuffer, offset, compressedLength);
-
-            if (!zstdDecompressor) {
-                throw new Error("Zstd decompressor is required for compressed files");
-            }
-            
-            // Handle different zstd library APIs - check direct function first
-            if (typeof zstdDecompressor === 'function') {
-                // Direct function call (like fzstd)
-                raw = zstdDecompressor(compressed);
-            } else if (typeof zstdDecompressor.decompress === 'function') {
-                raw = await zstdDecompressor.decompress(compressed);
-            } else if (zstdDecompressor.ZstdInit && typeof zstdDecompressor.ZstdInit === 'function') {
-                // zstd-wasm style
-                const zstd = await zstdDecompressor.ZstdInit();
-                raw = zstd.decompress(compressed);
-            } else {
-                throw new Error("Unknown zstd decompressor API");
-            }
-            
-            // Ensure raw is Uint8Array
-            if (!(raw instanceof Uint8Array)) {
-                raw = new Uint8Array(raw);
-            }
+            const compressedLength = dataView.getInt32(0, true);
+            const compressed = new Uint8Array(dataBuffer, 4, compressedLength);
+            if (!zstdDecompressor) throw new Error("Zstd decompressor is required for compressed files");
+            raw = this.asBytes(await this.callDecompressor(zstdDecompressor, compressed));
+        } else {
+            const bytes = bitmask[1] ? (bitmask[3] ? sampleCount : sampleCount * 2) : sampleCount * 8;
+            raw = new Uint8Array(dataBuffer, 0, bytes);
         }
-        else // Uncompressed just read it in
-        {
-            let bytesToRead;
-            if (bitmask[2] && bitmask[1] && !bitmask[3]) // Delta + Quantized 16-bit
-                bytesToRead = sampleCount * 2;
-            else if (bitmask[1]) // Just quantized (8-bit or 16-bit)
-                bytesToRead = bitmask[3] ? sampleCount : sampleCount * 2;
-            else // Uncompressed doubles
-                bytesToRead = sampleCount * 8; // 8 bytes per double
+        const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+        for (let f = 0; f < totalFrames; f++) output[f] = new Float32Array(numBands);
 
-            raw = new Uint8Array(dataBuffer, offset, bytesToRead);
-        }
-
-        // Reconstruct from Deltas
         if (bitmask[2]) {
-            if (bitmask[1] && !bitmask[3]) // 16 bit 
-            {
-                // 16-bit delta encoding: deltas are shorts, accumulate into short current values
+            if (bitmask[1] && !bitmask[3]) {
                 const current = new Int16Array(numBands);
-                const allDeltas = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
-
-                for (let f = 0; f < totalFrames; f++) {
-                    output[f] = new Array(numBands);
-                    for (let j = 0; j < numBands; j++) {
-                        const idx = f * numBands + j;
-                        current[j] += allDeltas[idx];
-                        output[f][j] = (current[j] / 32767.0 + 1.0) / 2.0;
-                    }
+                for (let i = 0; i < sampleCount; i++) {
+                    const j = i % numBands;
+                    current[j] += view.getInt16(i * 2, true);
+                    output[(i / numBands) | 0][j] = (current[j] / 32767 + 1) / 2;
                 }
-                return output;
-            }
-            else // 8 bit
-            {
+            } else if (bitmask[1]) {
                 const current = new Int8Array(numBands);
-                for (let f = 0; f < totalFrames; f++) {
-                    output[f] = new Array(numBands);
-                    for (let j = 0; j < numBands; j++) {
-                        const delta = new Int8Array(raw.buffer, raw.byteOffset + f * numBands + j, 1)[0];
-                        current[j] += delta;
-                        output[f][j] = (current[j] / 127.0 + 1.0) / 2.0;
-                    }
+                for (let i = 0; i < sampleCount; i++) {
+                    const j = i % numBands;
+                    current[j] += view.getInt8(i);
+                    output[(i / numBands) | 0][j] = (current[j] / 127 + 1) / 2;
                 }
-                return output;
-            }
-
-            // If we are delta encoded, we don't need to dequantize again
-            // Delta encoding uses a different quantization type (signed instead of unsigned) because to show the difference from large to small leads to negative deltas
-        }
-
-        // Dequantize 
-        if (bitmask[1] && !bitmask[3]) // 16 bit 
-        {
-            const allShorts = new Uint16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
-
-            for (let f = 0; f < totalFrames; f++) {
-                output[f] = new Array(numBands);
-                for (let j = 0; j < numBands; j++) {
-                    // Convert to 0-1 range
-                    output[f][j] = allShorts[f * numBands + j] / 65535.0;
+            } else {
+                const current = new Float64Array(numBands);
+                for (let i = 0; i < sampleCount; i++) {
+                    const j = i % numBands;
+                    current[j] += view.getFloat64(i * 8, true);
+                    output[(i / numBands) | 0][j] = current[j];
                 }
             }
+        } else if (bitmask[1] && !bitmask[3]) {
+            for (let i = 0; i < sampleCount; i++) output[(i / numBands) | 0][i % numBands] = view.getUint16(i * 2, true) / 65535;
+        } else if (bitmask[1]) {
+            for (let i = 0; i < sampleCount; i++) output[(i / numBands) | 0][i % numBands] = raw[i] / 255;
+        } else {
+            for (let i = 0; i < sampleCount; i++) output[(i / numBands) | 0][i % numBands] = view.getFloat64(i * 8, true);
         }
-        else if (bitmask[1] && bitmask[3]) // 8 bit
-        {
-            for (let f = 0; f < totalFrames; f++) {
-                output[f] = new Array(numBands);
-                for (let j = 0; j < numBands; j++) {
-                    // Convert to 0-1 range
-                    output[f][j] = raw[f * numBands + j] / 255.0;
-                }
-            }
-        }
-
-        if (output[0] == null) {
-            // No quantization or delta encoding so take from raw and convert to double[][]
-            const floatSize = 8; // sizeof(double)
-
-            for (let f = 0; f < totalFrames; f++) {
-                output[f] = new Array(numBands);
-                for (let j = 0; j < numBands; j++) {
-                    const idx = (f * numBands + j) * floatSize;
-                    const rawView = new DataView(raw.buffer, raw.byteOffset + idx, floatSize);
-                    const val = rawView.getFloat64(0, true);
-                    // Clamp or scale if needed, otherwise just assign
-                    output[f][j] = val;
-                }
-            }
-            return output;
-        }
-
         return output;
     }
 }
+
+if (typeof module !== "undefined") module.exports = { AudioDecoder };

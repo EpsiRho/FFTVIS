@@ -1,129 +1,87 @@
-﻿using FftSharp;
-using FFTVIS;
-using System;
+﻿using FFTVIS;
 using System.Diagnostics;
-using System.Numerics;
 
-// This is a very simplified tool for checking encoding decoding with the FFTVIS library.
+// A small tool for checking encoding and decoding with the FFTVIS library.
 // It is recommended to check out FreqFreak on GitHub, which has an FVZ file viewer UI, can show synced visuals as well as encode on the fly for testing and export.
+//
+// Non-interactive use:
+//   FFTVISTool encode <audio> [bands] [fps] [bits] [decayPerSecond] [stereo:0|1] [codec:none|zstd|brotli]
+//   FFTVISTool decode <file.fvz>
 
-Console.WriteLine("[FFTVIS Tool]");
-
-Console.WriteLine("1-Decode FVZ File");
-Console.WriteLine("2-Encode Audio File");
-var choice = Console.ReadLine();
-
-Console.Write("Enter a file:\n> ");
-var input = Console.ReadLine();
-
-if (string.IsNullOrEmpty(input))
+string? choice, input;
+if (args.Length >= 2)
 {
-    return;
+    choice = args[0] == "decode" ? "1" : "2";
+    input = args[1];
+}
+else
+{
+    Console.WriteLine("[FFTVIS Tool]");
+    Console.WriteLine("1-Decode FVZ File");
+    Console.WriteLine("2-Encode Audio File");
+    choice = Console.ReadLine();
+    Console.Write("Enter a file:\n> ");
+    input = Console.ReadLine();
 }
 
-if (input.StartsWith("\"") || input.EndsWith("\""))
-{
-    input = input.Trim('"');
-}
-
+if (string.IsNullOrEmpty(input)) return;
+input = input.Trim('"');
 if (!Path.Exists(input))
 {
     Console.Write("Not a valid path!");
     return;
 }
 
-if (int.TryParse(choice, out int ch))
+if (choice == "1")
 {
-    if(ch == 1)
+    var watch = Stopwatch.StartNew();
+    var fv = AudioDecoder.ReadFile(input);
+    var md = fv.metadata;
+    Console.WriteLine($"Loaded {input} in {watch.ElapsedMilliseconds} ms");
+    Console.WriteLine($"Version: {md.Version}");
+    Console.WriteLine($"Frames: {md.TotalFrames} x {md.Channels} channel(s) x {md.NumBands} bands @ {md.FrameRate} fps ({md.Duration})");
+    Console.WriteLine($"FFT Resolution: {md.FftResolution}, sample rate {md.SampleRate}");
+    Console.WriteLine($"Storage: {md.QuantizeBits}-bit, delta {md.DeltaEncoded}, {md.Codec}, decay {md.DecayPerSecond}/s");
+    Console.WriteLine($"Mapping: {md.Mapping}, {md.FrequencyMin}-{md.FrequencyMax} Hz, floor {md.DbFloor} dB, range {md.DbRange} dB");
+    Console.WriteLine($"Max Amplitude: {md.MaxAmplitude}");
+    if (md.BandEdges.Length > 0)
+        Console.WriteLine($"Band edges: {string.Join(", ", md.BandEdges.Select(e => e.ToString("F0")))}");
+}
+else if (choice == "2")
+{
+    int Arg(int i, int fallback) => args.Length > i && int.TryParse(args[i], out var v) ? v : fallback;
+    var options = new EncoderOptions
     {
-        var fv = AudioDecoder.ReadFile(input);
-        if (fv == null)
-        {
-            Console.WriteLine("Failed to load file.");
-            return;
-        }
-        Console.WriteLine($"Loaded {input} with {fv.metadata.totalFrames} frames.");
-        Console.WriteLine($"Version: {fv.metadata.version}");
-        Console.WriteLine($"FFT Resolution: {fv.metadata.fftResolution}");
-        Console.WriteLine($"Num Bands: {fv.metadata.numBands}");
-        Console.WriteLine($"Frame Rate: {fv.metadata.frameRate}");
-        Console.WriteLine($"Max Amplitude: {fv.metadata.maxAmplitude}");
-        Console.WriteLine($"Compression Type: {fv.metadata.compressionType}");
-        for (int i = 0; i < fv.frames.Length; i++)
-        {
-            foreach (var bin in fv.frames[i])
-            {
-                if (double.IsInfinity(bin))
-                {
-                    Console.WriteLine($"Frame {i}: {bin}");
-                }
+        BarCount = Arg(2, 64),
+        FPS = Arg(3, 60),
+        QuantizeBits = Arg(4, 8),
+        DecayPerSecond = args.Length > 5 && double.TryParse(args[5], out var d) ? d : 0,
+        Stereo = Arg(6, 0) == 1,
+        Codec = args.Length > 7 ? Enum.Parse<FvzCodec>(args[7], true) : FvzCodec.Brotli,
+    };
 
-            }
-        }
+    var watch = Stopwatch.StartNew();
+    var encoder = new AudioEncoder(options);
+    if (!encoder.LoadAudio(input))
+    {
+        Console.WriteLine("Failed to load audio.");
         return;
     }
-    else if (ch == 2)
+    Console.WriteLine($"Loaded in {watch.ElapsedMilliseconds} ms, rendering...");
+
+    encoder.GenerateFrames(Console.IsOutputRedirected ? null : new Progress<double>(p =>
     {
-        var watch = Stopwatch.StartNew();
-        Console.WriteLine("Loading...");
-        int fps = 100;
-        int barCount = 128;
-        int res = 4096;
-        CompressionType ct = CompressionType.Zstd;
-        AudioEncoder encoder = new AudioEncoder(barCount, -80, 90, 20, 20000, 0, SpectrogramMapping.Normalized, res, fps, ct);
-        var chk = encoder.LoadAudio(input, 44100);
-        if (!chk)
-        {
-            Console.WriteLine("Failed to load audio.");
-            return;
-        }
-
-        Console.WriteLine("Rendering...");
-        double percent = 0;
-        double complete = 0;
-
-        CancellationTokenSource cts = new();
-
-        Thread t = new Thread(() =>
-        {
-            while (!cts.IsCancellationRequested)
-            {
-                percent = complete / encoder.TotalFrames;
-                Console.Write($"Progress: {percent * 100:F2}%      ");
-                Console.CursorLeft = 0;
-                Thread.Sleep(16);
-            }
-        });
-        t.Start();
-
-        chk = encoder.GenerateFrames(new Progress<double>((double index) =>
-        {
-            complete++;
-        }));
-
-        cts.Cancel();
-
-        string filename = Path.GetFileNameWithoutExtension(input);
-
+        Console.Write($"Progress: {p * 100:F2}%      ");
         Console.CursorLeft = 0;
-        Console.WriteLine($"Progress: {1 * 100:F2}%      ");
-        Console.WriteLine("Saving...");
-        encoder.SaveToFile($"{filename}-{barCount}x{res}@{fps} [{ct}]");
+    }));
+    Console.WriteLine($"Generated in {watch.ElapsedMilliseconds} ms, saving...");
 
-        watch.Stop();
-
-        Console.WriteLine($"Time: {watch.Elapsed}");
-        Console.WriteLine($"Saved to {filename}-{barCount}x{res}@{fps} [{ct}].fvz at this exe's location.");
-    }
-    else
-    {
-        Console.WriteLine("Invalid choice.");
-        return;
-    }
+    string name = $"{Path.GetFileNameWithoutExtension(input)}-{options.BarCount}b{options.FPS}f{options.QuantizeBits}q{(options.Stereo ? "-stereo" : "")}-{options.Codec}.fvz";
+    encoder.SaveToFile(name);
+    Console.WriteLine($"Time: {watch.Elapsed}");
+    Console.WriteLine($"Saved {new FileInfo(name).Length / 1024.0:F1} KB to {Path.GetFullPath(name)}");
 }
 else
 {
-    return;
+    Console.WriteLine("Invalid choice.");
 }
-
-
