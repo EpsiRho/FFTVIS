@@ -1,7 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <!-- Both current LTS releases. -->
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Title>FFTVIS</Title>
@@ -13,6 +14,14 @@
     <PackageTags>audio;visualization;visual;fft;fftvis</PackageTags>
     <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
     <Version>2.0.0</Version>
+    <PackageId>FFTVIS</PackageId>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <Deterministic>true</Deterministic>
     <PackageReleaseNotes>Format v3: brotli, 4-16 bit quantization, decay, stereo, band edges. See README changelog.</PackageReleaseNotes>
   </PropertyGroup>
 
